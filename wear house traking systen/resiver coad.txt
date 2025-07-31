@@ -1,0 +1,163 @@
+#include <WiFi.h>                 // Required for WiFi functionality on ESP32
+#include <WebServer.h>           // For creating a web server on ESP32
+#include <Adafruit_GFX.h>        // Core graphics library for OLED
+#include <Adafruit_SSD1306.h>    // Specific library for SSD1306 OLED displays
+
+// ========== WiFi Credentials ==========
+const char* ssid = "realme C21Y";       // Replace with your WiFi SSID
+const char* password = "12345678";      // Replace with your WiFi password
+
+// ========== Web Server ==========
+WebServer server(80);    // Create web server instance running on port 80 (HTTP)
+
+// ========== OLED Setup ==========
+#define SCREEN_WIDTH 128           // OLED display width, in pixels
+#define SCREEN_HEIGHT 64           // OLED display height, in pixels
+#define OLED_ADDR 0x3C             // I2C address of the OLED screen
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);  // Create OLED display object
+
+String currentDisplay = "Waiting for data...";  // Default message before receiving data
+
+// ========== LED Pins ==========
+#define LED_UPPER  2    // GPIO 2 → Green LED for Upper shelf full
+#define LED_MIDDLE 4    // GPIO 4 → Yellow LED for Middle shelf full
+#define LED_LOWER  5    // GPIO 5 → Red LED for Lower shelf full
+
+void setup() {
+  Serial.begin(115200);    // Start serial communication for debugging
+
+  // ==== Set LED pins as OUTPUT ====
+  pinMode(LED_UPPER, OUTPUT);
+  pinMode(LED_MIDDLE, OUTPUT);
+  pinMode(LED_LOWER, OUTPUT);
+
+  // ==== Connect to WiFi ====
+  WiFi.begin(ssid, password);       // Start connecting to WiFi
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");             // Print dot every half second until connected
+  }
+  Serial.println("\n✅ Connected to WiFi!");      // Once connected
+  Serial.println("📶 IP Address: " + WiFi.localIP().toString());
+
+  // ==== Initialize OLED Display ====
+  display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR); // Start the OLED with the given address
+  display.clearDisplay();                         // Clear the screen
+  display.setTextSize(1);                         // Small font
+  display.setTextColor(SSD1306_WHITE);            // White color font
+  display.setCursor(0, 0);                        // Start at top-left corner
+  display.println(currentDisplay);                // Display the initial message
+  display.display();                              // Show everything on screen
+
+  // ==== Define /update HTTP endpoint ====
+  server.on("/update", []() {
+    // Check if 'sensor' query parameter is present in URL
+    if (server.hasArg("sensor")) {
+      currentDisplay = server.arg("sensor");    // Store received sensor level string
+
+      // === Update OLED Display with received level ===
+      display.clearDisplay();                   // Clear screen
+      display.setTextSize(1);
+      display.setCursor(0, 0);
+      display.println(" Level Detected:");
+      display.setTextSize(2);
+      display.setCursor(0, 20);
+      display.println(currentDisplay);          // Display the actual level
+      display.display();                        // Refresh screen
+
+      // === LED Control Logic ===
+      if (currentDisplay == "UPPER") {
+        digitalWrite(LED_UPPER, HIGH);          // Green LED ON
+        digitalWrite(LED_MIDDLE, LOW);          // Others OFF
+        digitalWrite(LED_LOWER, LOW);
+      } else if (currentDisplay == "MIDDLE") {
+        digitalWrite(LED_UPPER, LOW);
+        digitalWrite(LED_MIDDLE, HIGH);         // Yellow LED ON
+        digitalWrite(LED_LOWER, LOW);
+      } else if (currentDisplay == "LOWER") {
+        digitalWrite(LED_UPPER, LOW);
+        digitalWrite(LED_MIDDLE, LOW);
+        digitalWrite(LED_LOWER, HIGH);          // Red LED ON
+      } else {
+        // If level is EMPTY or unknown, turn OFF all LEDs
+        digitalWrite(LED_UPPER, LOW);
+        digitalWrite(LED_MIDDLE, LOW);
+        digitalWrite(LED_LOWER, LOW);
+      }
+
+      Serial.println("✅ Received Level: " + currentDisplay);   // Print to serial for confirmation
+      server.send(200, "text/plain", "OK");                    // Send success HTTP response
+    } else {
+      // Missing sensor argument in URL
+      server.send(400, "text/plain", "Missing sensor data");
+    }
+  });
+
+  // ==== Define /unlock HTTP endpoint ====
+  server.on("/unlock", []() {
+    // === Display Access Granted on OLED ===
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setCursor(10, 10);
+    display.println("Access");
+    display.setCursor(10, 35);
+    display.println("GRANTED!");
+    display.display();
+
+    // === Flash all LEDs for feedback ===
+    digitalWrite(LED_UPPER, HIGH);
+    digitalWrite(LED_MIDDLE, HIGH);
+    digitalWrite(LED_LOWER, HIGH);
+    delay(1000);   // Wait for 1 second
+    digitalWrite(LED_UPPER, LOW);
+    digitalWrite(LED_MIDDLE, LOW);
+    digitalWrite(LED_LOWER, LOW);
+
+    server.send(200, "text/plain", "Unlocked");  // Send confirmation response
+  });
+
+  // ==== Root Web Page (/) ====
+  server.on("/", []() {
+    // Build an HTML web page showing the current level, date, and time
+    String html = R"rawliteral(
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="refresh" content="1"> <!-- Auto-refresh every second -->
+        <title>WAREHOUSE ITEM TRACKING SYSTEM</title>
+        <style>
+          body { font-family: Arial; text-align: center; padding-top: 40px; background-color: #f4f4f4; }
+          h1 { color: RED; font-size: 28px; }
+          #clock, #date { font-size: 24px; margin: 10px; }
+        </style>
+      </head>
+      <body>
+        <h1> Level Detected: <span id="level">)rawliteral" + currentDisplay + R"rawliteral(</span></h1>
+        <div id="date"></div>
+        <div id="clock"></div>
+
+        <script>
+          function updateClock() {
+            const now = new Date(); // Get current date/time
+            document.getElementById('date').innerText = now.toLocaleDateString();  // Display date
+            document.getElementById('clock').innerText = now.toLocaleTimeString(); // Display time
+          }
+          setInterval(updateClock, 1); // Refresh every millisecond
+          updateClock();               // Initial call
+        </script>
+      </body>
+      </html>
+    )rawliteral";
+
+    server.send(200, "text/html", html);  // Send the complete webpage as HTTP response
+  });
+
+  server.begin(); // Start the web server
+}
+
+void loop() {
+  server.handleClient(); // Continuously check for and handle client requests
+}

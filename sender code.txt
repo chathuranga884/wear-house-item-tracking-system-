@@ -1,0 +1,117 @@
+#include <WiFi.h>           // Library to handle WiFi functionality
+#include <HTTPClient.h>     // Library to send HTTP requests
+
+// ==============================
+// WiFi Configuration
+// ==============================
+const char* ssid = "realme C21Y";         // Your WiFi network name (SSID)
+const char* password = "12345678";        // Your WiFi password
+
+const char* receiverIP = "10.145.112.153"; // Static IP of ESP32-2 (Receiver)
+
+// ==============================
+// Ultrasonic Sensor Pins
+// ==============================
+// Upper shelf sensor
+#define TRIG_UPPER   26
+#define ECHO_UPPER   25
+
+// Middle shelf sensor
+#define TRIG_MIDDLE  14
+#define ECHO_MIDDLE  27
+
+// Lower shelf sensor
+#define TRIG_LOWER   13
+#define ECHO_LOWER   12
+
+// ==============================
+// Function to calculate distance
+// ==============================
+// This function sends a trigger pulse and waits for the echo to calculate distance
+float getDistance(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);              // Ensure trigger pin is low
+  delayMicroseconds(2);                    // Small delay
+  digitalWrite(trigPin, HIGH);             // Send a 10us pulse to trigger
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);              // Turn off trigger
+
+  // Read the time it takes for the echo to be received
+  long duration = pulseIn(echoPin, HIGH, 30000);  // Timeout after 30ms
+
+  // If no signal is received, return 999 as an invalid value
+  if (duration == 0) return 999;
+
+  // Calculate distance in cm (speed of sound = 343 m/s)
+  return duration * 0.0343 / 2;
+}
+
+void setup() {
+  Serial.begin(115200);  // Start Serial Monitor with baud rate 115200 for debugging
+
+  // Set ultrasonic sensor pin modes
+  pinMode(TRIG_UPPER, OUTPUT); 
+  pinMode(ECHO_UPPER, INPUT);
+  pinMode(TRIG_MIDDLE, OUTPUT); 
+  pinMode(ECHO_MIDDLE, INPUT);
+  pinMode(TRIG_LOWER, OUTPUT); 
+  pinMode(ECHO_LOWER, INPUT);
+
+  // Begin WiFi connection
+  WiFi.begin(ssid, password);
+  Serial.print("🔌 Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n✅ ESP32-1 Connected to WiFi");
+}
+
+void loop() {
+  // ===========================================
+  // Measure distance from all three sensors
+  // ===========================================
+  float d1 = getDistance(TRIG_UPPER, ECHO_UPPER);   // Distance for upper level
+  float d2 = getDistance(TRIG_MIDDLE, ECHO_MIDDLE); // Distance for middle level
+  float d3 = getDistance(TRIG_LOWER, ECHO_LOWER);   // Distance for lower level
+
+  // ===========================================
+  // Decide shelf level status based on distance
+  // ===========================================
+  String level = "EMPTY"; // Default state
+
+  // If all three levels are below 20cm, assume shelf is full (upper level occupied)
+  if (d1 < 20 && d2 < 20 && d3 < 20) {
+    level = "UPPER ✅";
+  }
+  // If only middle and lower levels are filled
+  else if (d2 < 20 && d3 < 20) {
+    level = "MIDDLE 🟡";
+  }
+  // If only lower level is filled
+  else if (d3 < 20) {
+    level = "LOWER 🔴";
+  }
+  // If none are filled, level remains "EMPTY"
+
+  // ===========================================
+  // Send data to receiver ESP32 (ESP32-2)
+  // ===========================================
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http; // Create an HTTP client object
+
+    // Construct the full URL to send data as a query parameter
+    String url = "http://" + String(receiverIP) + "/update?sensor=" + level;
+
+    http.begin(url); // Begin HTTP GET request
+    int httpCode = http.GET(); // Send the GET request
+    http.end(); // Close the connection
+
+    // Print status of HTTP request and level info to Serial Monitor
+    Serial.println("📤 Sent Level: " + level + " | 📡 HTTP Status: " + String(httpCode));
+  } else {
+    // WiFi disconnected or not available
+    Serial.println("❌ WiFi Disconnected. Cannot send data.");
+  }
+
+  delay(3000); // Wait for 3 seconds before repeating loop
+}
